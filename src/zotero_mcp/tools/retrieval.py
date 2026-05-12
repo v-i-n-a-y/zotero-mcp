@@ -1079,6 +1079,48 @@ def get_recent(
 
 
 @mcp.tool(
+    name="zotero_export_bibtex",
+    description=(
+        "Export items as BibTeX — the same format Overleaf uses when you add references "
+        "via the Zotero connector. Provide either a collection_key to export a whole "
+        "collection, a list of item_keys for specific items, or leave both empty to "
+        "export the entire library. Returns a .bib file as a string."
+    )
+)
+def export_bibtex(
+    collection_key: str | None = None,
+    item_keys: list[str] | str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    from zotero_mcp.tools import _helpers
+    zot = _client.get_zotero_client()
+    try:
+        if item_keys is not None:
+            keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
+            # pyzotero can fetch bibtex for specific items via items() with format
+            bibtex_parts = []
+            for key in keys:
+                try:
+                    result = zot.item(key, format="bibtex")
+                    if result:
+                        bibtex_parts.append(result if isinstance(result, str) else str(result))
+                except Exception:
+                    pass
+            return "\n".join(bibtex_parts) if bibtex_parts else "No items found."
+        elif collection_key is not None:
+            ctx.info(f"Exporting collection {collection_key} as BibTeX")
+            result = zot.collection_items(collection_key, format="bibtex")
+        else:
+            ctx.info("Exporting full library as BibTeX")
+            result = zot.items(format="bibtex")
+        return result if isinstance(result, str) else str(result)
+    except Exception as e:
+        ctx.error(f"Error exporting BibTeX: {e}")
+        return f"Error exporting BibTeX: {e}"
+
+
+@mcp.tool(
     name="zotero_get_item_versions",
     description=(
         "Get the version history / all versions stored for a set of items. "
