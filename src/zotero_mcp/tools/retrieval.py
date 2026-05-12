@@ -579,7 +579,7 @@ def get_items_children(
                     k = item.get("key", "")
                     parent_titles[k] = item.get("data", {}).get("title", "Untitled")
             except Exception as e:
-                ctx.warning(f"Batch parent lookup failed: {e}")
+                ctx.warn(f"Batch parent lookup failed: {e}")
                 for k in batch:
                     parent_titles.setdefault(k, f"(key: {k})")
 
@@ -1033,11 +1033,10 @@ def get_feed_items(
 
 @mcp.tool(
     name="zotero_get_recent",
-    description="Get recently added items to your Zotero library, or to a specific collection."
+    description="Get recently added items to your Zotero library."
 )
 def get_recent(
     limit: int | str = 10,
-    collection_key: str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1046,7 +1045,6 @@ def get_recent(
 
     Args:
         limit: Number of items to return
-        collection_key: Optional collection key to scope results to a specific collection
         ctx: MCP context
 
     Returns:
@@ -1058,24 +1056,13 @@ def get_recent(
 
         limit = _helpers._normalize_limit(limit, default=10)
 
-        # Get recent items, optionally scoped to a collection
-        if collection_key:
-            try:
-                _col = zot.collection(collection_key)
-            except Exception:
-                _col = None
-            if not _col or _col.get("key") != collection_key:
-                return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
-            items = zot.collection_items(collection_key, sort="dateAdded", direction="desc", limit=limit)
-        else:
-            items = zot.items(limit=limit, sort="dateAdded", direction="desc")
-
+        # Get recent items
+        items = zot.items(limit=limit, sort="dateAdded", direction="desc")
         if not items:
-            return "No items found in your Zotero library." if not collection_key else f"No items found in collection: {collection_key}"
+            return "No items found in your Zotero library."
 
         # Format items as markdown
-        scope = f" in Collection {collection_key}" if collection_key else ""
-        output = [f"# {limit} Most Recently Added Items{scope}", ""]
+        output = [f"# {limit} Most Recently Added Items", ""]
 
         for i, item in enumerate(items, 1):
             added = item.get("data", {}).get("dateAdded", "Unknown")
@@ -1089,3 +1076,112 @@ def get_recent(
     except Exception as e:
         ctx.error(f"Error fetching recent items: {str(e)}")
         return f"Error fetching recent items: {str(e)}"
+
+
+@mcp.tool(
+    name="zotero_get_item_versions",
+    description=(
+        "Get the version history / all versions stored for a set of items. "
+        "Returns item keys and their current version numbers — useful before bulk updates."
+    )
+)
+def get_item_versions(
+    item_keys: list[str] | str,
+    *,
+    ctx: Context
+) -> str:
+    from zotero_mcp.tools import _helpers
+    zot = _client.get_zotero_client()
+    keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
+    lines = ["# Item Versions\n"]
+    for key in keys:
+        try:
+            item = zot.item(key)
+            version = item.get("version", "?")
+            title = item.get("data", {}).get("title", "(no title)")[:60]
+            lines.append(f"- `{key}` v{version} — {title}")
+        except Exception as e:
+            lines.append(f"- `{key}` ERROR: {e}")
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="zotero_get_library_stats",
+    description="Get statistics about the current library: item counts by type, collection count, tag count."
+)
+def get_library_stats(*, ctx: Context) -> str:
+    from zotero_mcp.tools import _helpers
+    from collections import Counter
+    zot = _client.get_zotero_client()
+    try:
+        items = zot.everything(zot.items(itemType="-attachment -note"))
+        type_counts = Counter(i["data"].get("itemType", "?") for i in items)
+        tags = zot.everything(zot.tags())
+        colls = zot.everything(zot.collections())
+        lines = [
+            f"# Library Statistics\n",
+            f"**Total items:** {len(items)}",
+            f"**Collections:** {len(colls)}",
+            f"**Unique tags:** {len(tags)}",
+            f"\n## Items by Type",
+        ]
+        for itype, count in sorted(type_counts.items(), key=lambda x: -x[1]):
+            lines.append(f"- {itype}: {count}")
+        return "\n".join(lines)
+    except Exception as e:
+        ctx.error(f"Error fetching library stats: {e}")
+        return f"Error: {e}"
+
+
+@mcp.tool(
+    name="zotero_get_items_by_type",
+    description="Get all items of a specific type (e.g. 'journalArticle', 'book', 'preprint', 'thesis')."
+)
+def get_items_by_type(
+    item_type: str,
+    limit: int | str = 50,
+    *,
+    ctx: Context
+) -> str:
+    from zotero_mcp.tools import _helpers
+    from zotero_mcp import utils as _utils
+    zot = _client.get_zotero_client()
+    try:
+        limit_int = int(limit)
+        items = zot.items(itemType=item_type, limit=limit_int, sort="dateAdded", direction="desc")
+        if not items:
+            return f"No items of type '{item_type}' found."
+        lines = [f"# Items of type '{item_type}' ({len(items)} shown)\n"]
+        for i, item in enumerate(items, 1):
+            lines.extend(_utils.format_item_result(item, index=i, abstract_len=0, include_tags=False))
+        return "\n".join(lines)
+    except Exception as e:
+        ctx.error(f"Error: {e}")
+        return f"Error: {e}"
+
+
+@mcp.tool(
+    name="zotero_get_items_without_collection",
+    description="Get items that are not assigned to any collection (unfiled items)."
+)
+def get_items_without_collection(
+    limit: int | str = 100,
+    *,
+    ctx: Context
+) -> str:
+    from zotero_mcp.tools import _helpers
+    from zotero_mcp import utils as _utils
+    zot = _client.get_zotero_client()
+    try:
+        limit_int = int(limit)
+        items = zot.items(limit=limit_int, itemType="-attachment -note", q="")
+        unfiled = [i for i in items if not i.get("data", {}).get("collections")]
+        if not unfiled:
+            return "All items are assigned to at least one collection."
+        lines = [f"# Unfiled Items ({len(unfiled)} shown)\n"]
+        for i, item in enumerate(unfiled, 1):
+            lines.extend(_utils.format_item_result(item, index=i, abstract_len=0, include_tags=False))
+        return "\n".join(lines)
+    except Exception as e:
+        ctx.error(f"Error: {e}")
+        return f"Error: {e}"

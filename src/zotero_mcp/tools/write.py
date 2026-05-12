@@ -7,8 +7,6 @@ import re
 import tempfile
 import xml.etree.ElementTree as ET
 
-import time as _time
-
 import requests
 from fastmcp import Context
 
@@ -215,12 +213,7 @@ def batch_update_tags(
 
 @mcp.tool(
     name="zotero_create_collection",
-    description=(
-        "Create a new collection (project/folder) in your Zotero library. "
-        "To create a subcollection, pass parent_collection (not parent_key) as either "
-        "a collection key (8-character string like 'KMMQDFQ4') or a collection name. "
-        "Use zotero_search_collections to find collection keys."
-    )
+    description="Create a new collection (project/folder) in your Zotero library."
 )
 def create_collection(
     name: str,
@@ -317,12 +310,7 @@ def search_collections(
 
 @mcp.tool(
     name="zotero_manage_collections",
-    description=(
-        "Add or remove one or more items from collections. "
-        "item_keys must be an ARRAY of item keys, e.g. [\"KEY1\", \"KEY2\"] — not a single string. "
-        "add_to and remove_from also accept arrays of collection keys. "
-        "Use zotero_search_items to find item keys and zotero_search_collections to find collection keys."
-    )
+    description="Add or remove items from collections."
 )
 def manage_collections(
     item_keys: list[str] | str,
@@ -603,24 +591,10 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
     """Add an arXiv paper by ID. Internal helper for add_by_url."""
     ctx.info(f"Fetching arXiv metadata for: {arxiv_id}")
 
-    resp = None
-    for attempt in range(3):
-        resp = requests.get(
-            f"https://export.arxiv.org/api/query?id_list={arxiv_id}",
-            timeout=30,
-        )
-        if resp.status_code == 429:
-            wait = 5 * (2 ** attempt)  # 5s, 10s, 20s
-            ctx.info(f"arXiv API rate limit hit — waiting {wait}s before retry {attempt + 1}/3...")
-            _time.sleep(wait)
-            continue
-        break
-
-    if resp is None or resp.status_code == 429:
-        return (
-            f"arXiv API is rate-limiting requests. Please wait a moment and try again. "
-            f"(arXiv ID: {arxiv_id})"
-        )
+    resp = requests.get(
+        f"https://export.arxiv.org/api/query?id_list={arxiv_id}",
+        timeout=15,
+    )
     resp.raise_for_status()
 
     root = ET.fromstring(resp.text)
@@ -710,36 +684,9 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx):
     return f"Failed to create arXiv item: {result}"
 
 
-# Maps Zotero API field names to tool parameter names for user-facing messages
-_UPDATE_ITEM_API_TO_PARAM = {
-    "title": "title",
-    "date": "date",
-    "publicationTitle": "publication_title",
-    "abstractNote": "abstract",
-    "DOI": "doi",
-    "url": "url",
-    "extra": "extra",
-    "volume": "volume",
-    "issue": "issue",
-    "pages": "pages",
-    "publisher": "publisher",
-    "ISSN": "issn",
-    "language": "language",
-    "shortTitle": "short_title",
-    "edition": "edition",
-    "ISBN": "isbn",
-    "bookTitle": "book_title",
-}
-
-
 @mcp.tool(
     name="zotero_update_item",
-    description=(
-        "Update metadata for an existing item in your Zotero library. "
-        "To add tags without removing existing ones, use add_tags (not tags). "
-        "To remove specific tags, use remove_tags. "
-        "Using tags replaces ALL existing tags — use add_tags/remove_tags for incremental changes."
-    )
+    description="Update metadata for an existing item in your Zotero library."
 )
 def update_item(
     item_key: str,
@@ -756,16 +703,6 @@ def update_item(
     doi: str | None = None,
     url: str | None = None,
     extra: str | None = None,
-    volume: str | None = None,
-    issue: str | None = None,
-    pages: str | None = None,
-    publisher: str | None = None,
-    issn: str | None = None,
-    language: str | None = None,
-    short_title: str | None = None,
-    edition: str | None = None,
-    isbn: str | None = None,
-    book_title: str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -805,37 +742,13 @@ def update_item(
             field_updates["url"] = url
         if extra is not None:
             field_updates["extra"] = extra
-        if volume is not None:
-            field_updates["volume"] = volume
-        if issue is not None:
-            field_updates["issue"] = issue
-        if pages is not None:
-            field_updates["pages"] = pages
-        if publisher is not None:
-            field_updates["publisher"] = publisher
-        if issn is not None:
-            field_updates["ISSN"] = issn
-        if language is not None:
-            field_updates["language"] = language
-        if short_title is not None:
-            field_updates["shortTitle"] = short_title
-        if edition is not None:
-            field_updates["edition"] = edition
-        if isbn is not None:
-            field_updates["ISBN"] = isbn
-        if book_title is not None:
-            field_updates["bookTitle"] = book_title
 
-        skipped = []
         for field, value in field_updates.items():
-            param_name = _UPDATE_ITEM_API_TO_PARAM.get(field, field)
             if field in data:
                 old = data[field]
                 if old != value:
-                    changes.append(f"- **{param_name}**: '{old}' -> '{value}'")
+                    changes.append(f"- **{field}**: '{old}' -> '{value}'")
                 data[field] = value
-            else:
-                skipped.append(param_name)
 
         # Creators
         if creators is not None:
@@ -876,24 +789,12 @@ def update_item(
             data["collections"] = list(existing_colls)
             changes.append(f"- **collections**: added {resolved}")
 
-        skip_warning = ""
-        if skipped:
-            item_type = data.get("itemType", "unknown")
-            skip_warning = (
-                f"\n\nSkipped (not valid for item type "
-                f"'{item_type}'): {', '.join(skipped)}"
-            )
-
         if not changes:
-            return "No changes to apply." + skip_warning
+            return "No changes to apply."
 
         resp = write_zot.update_item(item)
         if _helpers._handle_write_response(resp, ctx):
-            result = (
-                f"Successfully updated item `{item_key}`:\n\n"
-                + "\n".join(changes)
-            )
-            return result + skip_warning
+            return f"Successfully updated item `{item_key}`:\n\n" + "\n".join(changes)
         return f"Failed to update item: write operation returned failure"
 
     except ValueError as e:
@@ -910,13 +811,12 @@ def update_item(
 def find_duplicates(
     method: Literal["title", "doi", "both"] = "both",
     collection_key: str | None = None,
-    limit: int | str | None = 50,
+    limit: int = 50,
     *,
     ctx: Context
 ) -> str:
     try:
         zot = _client.get_zotero_client()
-        limit = _helpers._normalize_limit(limit, default=50)
         ctx.info(f"Searching for duplicates (method={method})")
 
         # Paginate manually instead of using zot.everything() which can
@@ -1015,9 +915,7 @@ def find_duplicates(
     description=(
         "Merge duplicate items. Consolidates tags, collections, notes, annotations, "
         "and all child items into the keeper. Duplicates are moved to Trash (recoverable). "
-        "Dry-run by default — call with confirm=True to execute. "
-        "Parameters: keeper_key (the item key to KEEP), "
-        "duplicate_keys (ARRAY of item keys to merge into the keeper and then trash)."
+        "Dry-run by default — call with confirm=True to execute."
     )
 )
 def merge_duplicates(
@@ -1038,7 +936,7 @@ def merge_duplicates(
         # Safety: remove keeper from duplicates
         if keeper_key in dup_keys:
             dup_keys.remove(keeper_key)
-            ctx.warning(f"Keeper key '{keeper_key}' was in duplicate list — removed.")
+            ctx.warn(f"Keeper key '{keeper_key}' was in duplicate list — removed.")
 
         if not dup_keys:
             return "Error: No duplicate keys to merge (after removing keeper if present)."
@@ -1133,7 +1031,7 @@ def merge_duplicates(
         for coll_key in new_collections:
             resp = write_zot.addto_collection(coll_key, keeper)
             if not _helpers._handle_write_response(resp, ctx):
-                ctx.warning(f"Failed to add keeper to collection {coll_key}")
+                ctx.warn(f"Failed to add keeper to collection {coll_key}")
             keeper = write_zot.item(keeper_key)  # re-fetch for version
 
         # Step 5: Re-parent children (skip duplicate attachments)
@@ -1197,9 +1095,9 @@ def merge_duplicates(
                 if resp.status_code in (200, 204):
                     trashed.append(dup_key)
                 else:
-                    ctx.warning(f"Failed to trash {dup_key}: HTTP {resp.status_code}")
+                    ctx.warn(f"Failed to trash {dup_key}: HTTP {resp.status_code}")
             except Exception as e:
-                ctx.warning(f"Failed to trash {dup_key}: {e}")
+                ctx.warn(f"Failed to trash {dup_key}: {e}")
 
         skip_info = f" ({len(skipped_dupes)} duplicate attachments skipped)" if skipped_dupes else ""
         return (
@@ -1395,3 +1293,424 @@ def add_from_file(
     except Exception as e:
         ctx.error(f"Error adding from file: {e}")
         return f"Error adding from file: {e}"
+
+
+@mcp.tool(
+    name="zotero_trash_items",
+    description=(
+        "Move one or more items to the Zotero Trash (recoverable). "
+        "Items can be restored from Trash. Use zotero_delete_items for permanent deletion."
+    )
+)
+def trash_items(
+    item_keys: list[str] | str,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        _, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
+    api_key = os.getenv("ZOTERO_API_KEY", "")
+    trashed, failed = [], []
+    for key in keys:
+        try:
+            item = write_zot.item(key)
+            version = item.get("version", 0)
+            url = f"{write_zot.endpoint}/{write_zot.library_type}/{write_zot.library_id}/items/{key}"
+            resp = requests.patch(
+                url,
+                json={"deleted": 1},
+                headers={
+                    "Zotero-API-Key": api_key,
+                    "If-Unmodified-Since-Version": str(version),
+                },
+                timeout=10,
+            )
+            if resp.status_code in (200, 204):
+                trashed.append(key)
+            else:
+                ctx.error(f"Trash {key} failed: {resp.status_code}")
+                failed.append(key)
+        except Exception as e:
+            ctx.error(f"Error trashing {key}: {e}")
+            failed.append(key)
+
+    lines = []
+    if trashed:
+        lines.append(f"Trashed {len(trashed)} item(s): {', '.join(f'`{k}`' for k in trashed)}")
+    if failed:
+        lines.append(f"Failed to trash {len(failed)} item(s): {', '.join(f'`{k}`' for k in failed)}")
+    return "\n".join(lines) if lines else "No items processed."
+
+
+@mcp.tool(
+    name="zotero_restore_from_trash",
+    description="Restore one or more items from the Trash back to the library."
+)
+def restore_from_trash(
+    item_keys: list[str] | str,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        _, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
+    api_key = os.getenv("ZOTERO_API_KEY", "")
+    restored, failed = [], []
+    for key in keys:
+        try:
+            item = write_zot.item(key)
+            version = item.get("version", 0)
+            url = f"{write_zot.endpoint}/{write_zot.library_type}/{write_zot.library_id}/items/{key}"
+            resp = requests.patch(
+                url,
+                json={"deleted": 0},
+                headers={"Zotero-API-Key": api_key, "If-Unmodified-Since-Version": str(version)},
+                timeout=10,
+            )
+            if resp.status_code in (200, 204):
+                restored.append(key)
+            else:
+                failed.append(key)
+        except Exception as e:
+            ctx.error(f"Error restoring {key}: {e}")
+            failed.append(key)
+
+    lines = []
+    if restored:
+        lines.append(f"Restored {len(restored)} item(s): {', '.join(f'`{k}`' for k in restored)}")
+    if failed:
+        lines.append(f"Failed to restore {len(failed)} item(s): {', '.join(f'`{k}`' for k in failed)}")
+    return "\n".join(lines) if lines else "No items processed."
+
+
+@mcp.tool(
+    name="zotero_delete_items",
+    description=(
+        "Permanently delete items from Zotero (irreversible). "
+        "Prefer zotero_trash_items unless you are sure. "
+        "Pass confirm=True to execute; dry-run by default."
+    )
+)
+def delete_items(
+    item_keys: list[str] | str,
+    confirm: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        _, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
+    if not confirm:
+        return (
+            f"Dry run: would permanently delete {len(keys)} item(s): "
+            f"{', '.join(f'`{k}`' for k in keys)}.\n"
+            "Call again with confirm=True to execute. This is irreversible."
+        )
+
+    deleted, failed = [], []
+    for key in keys:
+        try:
+            item = write_zot.item(key)
+            resp = write_zot.delete_item(item)
+            if _helpers._handle_write_response(resp, ctx):
+                deleted.append(key)
+            else:
+                failed.append(key)
+        except Exception as e:
+            ctx.error(f"Error deleting {key}: {e}")
+            failed.append(key)
+
+    lines = []
+    if deleted:
+        lines.append(f"Permanently deleted {len(deleted)} item(s): {', '.join(f'`{k}`' for k in deleted)}")
+    if failed:
+        lines.append(f"Failed to delete {len(failed)} item(s): {', '.join(f'`{k}`' for k in failed)}")
+    return "\n".join(lines) if lines else "No items processed."
+
+
+@mcp.tool(
+    name="zotero_get_trash",
+    description="List items currently in the Trash."
+)
+def get_trash(
+    limit: int | str = 50,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, _ = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        limit_int = int(limit)
+        items = read_zot.trash(limit=limit_int)
+        if not items:
+            return "Trash is empty."
+        lines = [f"# Items in Trash ({len(items)} shown)\n"]
+        for item in items:
+            data = item.get("data", {})
+            key = item.get("key", "?")
+            title = data.get("title", "(no title)")[:70]
+            itype = data.get("itemType", "?")
+            lines.append(f"- `{key}` [{itype}] {title}")
+        return "\n".join(lines)
+    except Exception as e:
+        ctx.error(f"Error fetching trash: {e}")
+        return f"Error fetching trash: {e}"
+
+
+@mcp.tool(
+    name="zotero_empty_trash",
+    description=(
+        "Permanently delete all items in the Trash (irreversible). "
+        "Pass confirm=True to execute; dry-run by default."
+    )
+)
+def empty_trash(
+    confirm: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        items = read_zot.trash(limit=500)
+        if not items:
+            return "Trash is already empty."
+        if not confirm:
+            return (
+                f"Dry run: would permanently delete {len(items)} item(s) from Trash.\n"
+                "Call again with confirm=True to execute. This is irreversible."
+            )
+        count = 0
+        for item in items:
+            try:
+                write_zot.delete_item(item)
+                count += 1
+            except Exception as e:
+                ctx.error(f"Error deleting {item.get('key')}: {e}")
+        return f"Permanently deleted {count} item(s) from Trash."
+    except Exception as e:
+        ctx.error(f"Error emptying trash: {e}")
+        return f"Error emptying trash: {e}"
+
+
+@mcp.tool(
+    name="zotero_change_item_type",
+    description=(
+        "Change the item type of an existing item (e.g. preprint → journalArticle). "
+        "Fields common to both types are preserved; type-specific fields may be lost. "
+        "Optionally update DOI, publication title, and volume/pages/issue at the same time."
+    )
+)
+def change_item_type(
+    item_key: str,
+    new_type: str,
+    doi: str | None = None,
+    publication_title: str | None = None,
+    volume: str | None = None,
+    issue: str | None = None,
+    pages: str | None = None,
+    date: str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        _, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        old_item = write_zot.item(item_key)
+        old_data = old_item.get("data", {})
+        old_type = old_data.get("itemType", "?")
+
+        # Get template for new type
+        template = write_zot.item_template(new_type)
+
+        # Copy over fields that exist in both types
+        shared_fields = {"title", "abstractNote", "url", "accessDate", "extra",
+                         "tags", "collections", "relations", "creators",
+                         "DOI", "date", "language", "shortTitle", "rights"}
+        for field in shared_fields:
+            if field in old_data and field in template:
+                template[field] = old_data[field]
+
+        # Apply explicit overrides
+        if doi is not None:
+            template["DOI"] = doi
+        if publication_title is not None and "publicationTitle" in template:
+            template["publicationTitle"] = publication_title
+        if volume is not None and "volume" in template:
+            template["volume"] = volume
+        if issue is not None and "issue" in template:
+            template["issue"] = issue
+        if pages is not None and "pages" in template:
+            template["pages"] = pages
+        if date is not None:
+            template["date"] = date
+
+        template["key"] = item_key
+        template["version"] = old_item["version"]
+
+        resp = write_zot.update_item({"key": item_key, "version": old_item["version"], "data": template})
+        if _helpers._handle_write_response(resp, ctx):
+            return (
+                f"Changed item `{item_key}` from **{old_type}** to **{new_type}**.\n"
+                + (f"DOI updated to `{doi}`\n" if doi else "")
+                + (f"Publication: {publication_title}\n" if publication_title else "")
+            )
+        return f"Failed to change item type."
+    except Exception as e:
+        ctx.error(f"Error changing item type: {e}")
+        return f"Error changing item type: {e}"
+
+
+@mcp.tool(
+    name="zotero_rename_collection",
+    description="Rename an existing collection."
+)
+def rename_collection(
+    collection_key: str,
+    new_name: str,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        _, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        coll = write_zot.collection(collection_key)
+        old_name = coll["data"]["name"]
+        coll["data"]["name"] = new_name
+        resp = write_zot.update_collection(coll)
+        if _helpers._handle_write_response(resp, ctx):
+            return f"Renamed collection `{collection_key}`: **{old_name}** → **{new_name}**"
+        return "Failed to rename collection."
+    except Exception as e:
+        ctx.error(f"Error renaming collection: {e}")
+        return f"Error renaming collection: {e}"
+
+
+@mcp.tool(
+    name="zotero_delete_collection",
+    description=(
+        "Delete a collection. Items in the collection are NOT deleted, "
+        "only the collection itself. Pass confirm=True to execute."
+    )
+)
+def delete_collection(
+    collection_key: str,
+    confirm: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        _, write_zot = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    try:
+        coll = write_zot.collection(collection_key)
+        name = coll["data"]["name"]
+        if not confirm:
+            return (
+                f"Dry run: would delete collection **{name}** (`{collection_key}`). "
+                "Items inside will NOT be deleted. Call with confirm=True to execute."
+            )
+        resp = write_zot.delete_collection(coll)
+        if _helpers._handle_write_response(resp, ctx):
+            return f"Deleted collection **{name}** (`{collection_key}`)."
+        return "Failed to delete collection."
+    except Exception as e:
+        ctx.error(f"Error deleting collection: {e}")
+        return f"Error deleting collection: {e}"
+
+
+@mcp.tool(
+    name="zotero_copy_items_to_library",
+    description=(
+        "Copy items from the current library into a group library (or vice versa) "
+        "by adding them to the target library via DOI or metadata. "
+        "Provide a list of item keys from the current library and a target library spec."
+    )
+)
+def copy_items_to_library(
+    item_keys: list[str] | str,
+    target_library_type: str,
+    target_library_id: str,
+    target_collection_key: str | None = None,
+    *,
+    ctx: Context
+) -> str:
+    try:
+        read_zot, _ = _helpers._get_write_client(ctx)
+    except ValueError as e:
+        return str(e)
+
+    import pyzotero.zotero as pyzotero_zotero
+    api_key = os.getenv("ZOTERO_API_KEY")
+    if not api_key:
+        return "ZOTERO_API_KEY not set; cannot write to target library."
+
+    raw_type = target_library_type
+    if raw_type in ("user", "group"):
+        raw_type = raw_type + "s"
+
+    target_zot = pyzotero_zotero.Zotero(
+        library_id=target_library_id,
+        library_type=raw_type,
+        api_key=api_key,
+        local=False,
+    )
+
+    keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
+    copied, failed = [], []
+    for key in keys:
+        try:
+            item = read_zot.item(key)
+            data = item.get("data", {})
+            item_type = data.get("itemType", "document")
+
+            template = target_zot.item_template(item_type)
+            for field in template:
+                if field in data and field not in ("key", "version", "dateAdded", "dateModified"):
+                    template[field] = data[field]
+
+            if target_collection_key:
+                template["collections"] = [target_collection_key]
+            else:
+                template["collections"] = []
+
+            result = target_zot.create_items([template])
+            if isinstance(result, dict) and result.get("success"):
+                new_key = next(iter(result["success"].values()))
+                copied.append(f"`{key}` → `{new_key}`")
+            else:
+                failed.append(key)
+        except Exception as e:
+            ctx.error(f"Error copying {key}: {e}")
+            failed.append(key)
+
+    lines = []
+    if copied:
+        lines.append(f"Copied {len(copied)} item(s):\n" + "\n".join(f"  {c}" for c in copied))
+    if failed:
+        lines.append(f"Failed to copy {len(failed)} item(s): {', '.join(f'`{k}`' for k in failed)}")
+    return "\n".join(lines) if lines else "No items processed."
