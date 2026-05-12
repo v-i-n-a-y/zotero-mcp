@@ -1564,10 +1564,12 @@ def change_item_type(
         if date is not None:
             template["date"] = date
 
+        # Mutate the full item structure in-place so pyzotero's validator sees the correct wrapper
         template["key"] = item_key
         template["version"] = old_item["version"]
+        old_item["data"] = template
 
-        resp = write_zot.update_item({"key": item_key, "version": old_item["version"], "data": template})
+        resp = write_zot.update_item(old_item)
         if _helpers._handle_write_response(resp, ctx):
             return (
                 f"Changed item `{item_key}` from **{old_type}** to **{new_type}**.\n"
